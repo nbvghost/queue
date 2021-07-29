@@ -15,10 +15,6 @@ func init() {
 }
 func TestPools_Remove(t *testing.T) {
 	PoolTool := NewPools()
-	PoolTool.createPool()
-	PoolTool.createPool()
-	PoolTool.createPool()
-	PoolTool.createPool()
 
 	type args struct {
 		target *block.MemBlock
@@ -45,25 +41,6 @@ func TestPools_Remove(t *testing.T) {
 
 }
 
-func TestPool_generatorHash(t *testing.T) {
-
-	tests := []struct {
-		name string
-		want string
-	}{
-		{name: "TestPool_generatorHash"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := &block.MemBlock{}
-			if got := p.generatorHash(); got != tt.want {
-				t.Errorf("generatorHash() = %v, want %v", got, tt.want)
-			}
-			t.Log(p.Hash)
-			t.Log(time.Now().Format("20060102150405.999999999"))
-		})
-	}
-}
 func BenchmarkPools_Push(b *testing.B) {
 	p := NewPools()
 	fmt.Println(b.N)
@@ -109,5 +86,52 @@ func TestPools_Push(t *testing.T) {
 	for {
 		p.printStat()
 		time.Sleep(time.Second)
+	}
+}
+
+func TestMemQueue_addIndex(t *testing.T) {
+	type fields struct {
+		rIndex uint64
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   uint64
+	}{
+		{name: "TestMemQueue_addIndex", fields: fields{rIndex: 1}, want: 2},
+		{name: "TestMemQueue_addIndex", fields: fields{rIndex: 10}, want: 11},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &MemQueue{
+				rIndex: tt.fields.rIndex,
+			}
+			if got := p.addIndex(); got != tt.want {
+				t.Errorf("addIndex() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+func TestMemQueue_cutIndex(t *testing.T) {
+	type fields struct {
+		rIndex uint64
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		want   uint64
+	}{
+		{name: "TestMemQueue_addIndex", fields: fields{rIndex: 1}, want: 0},
+		{name: "TestMemQueue_addIndex", fields: fields{rIndex: 10}, want: 9},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := &MemQueue{
+				rIndex: tt.fields.rIndex,
+			}
+			if got := p.cutIndex(); got != tt.want {
+				t.Errorf("addIndex() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

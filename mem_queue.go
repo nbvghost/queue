@@ -3,6 +3,7 @@ package queue
 import (
 	"errors"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,7 +45,8 @@ func (p *MemQueue) addIndex() uint64 {
 	return atomic.AddUint64(&p.rIndex, 1)
 }
 func (p *MemQueue) cutIndex() uint64 {
-	return atomic.AddUint64(&p.rIndex, -1)
+	log.Println(^uint64(1 - 1))
+	return atomic.AddUint64(&p.rIndex, ^uint64(1-1))
 }
 func NewPools() *MemQueue {
 	pt := map[string]interface{}{
@@ -123,7 +125,7 @@ func (p *MemQueue) GetMessage(num int) []interface{} {
 	}()
 
 	if num == 0 {
-		return msgs
+		num = 1
 	}
 	t := time.NewTicker(time.Duration(params.Params.MaxWaitCollectMessage) * time.Millisecond)
 	defer t.Stop()
@@ -139,10 +141,10 @@ func (p *MemQueue) GetMessage(num int) []interface{} {
 			} else {
 				continue
 			}
-		}
-
-		if msg, err := p.get(); err != nil {
-
+		default:
+			if msg, err := p.get(); err != nil {
+				msgs = append(msgs, msg)
+			}
 		}
 
 	}
