@@ -2,6 +2,7 @@ package queue
 
 import (
 	"fmt"
+	"log"
 	"testing"
 	"time"
 
@@ -50,8 +51,11 @@ func BenchmarkPools_Push(b *testing.B) {
 }
 func TestPools_Push(t *testing.T) {
 
+	log.SetFlags(log.Lshortfile)
+
 	params.Params.MaxWaitCollectMessage = 1000
-	params.Params.MaxPoolNum = 10
+	params.Params.BlockBufferSize = 10
+	params.Params.PoolSize = 1000000
 
 	p := NewPools()
 	//p := NewPools(Order)
@@ -61,10 +65,15 @@ func TestPools_Push(t *testing.T) {
 	go func() {
 		for {
 
-			p.Push(n)
+			err := p.Push(n)
+			if err != nil {
+				log.Println(err)
+				break
+			}
 
 			n++
-			if n > 50 {
+			if n > 500 {
+
 				// n=0
 				//time.Sleep(time.Second*20)
 			}
@@ -76,9 +85,9 @@ func TestPools_Push(t *testing.T) {
 	go func() {
 
 		for {
-			df := p.GetMessage(10)
-			fmt.Println(len(df))
-			time.Sleep(time.Millisecond * 1000)
+			p.GetMessage(10)
+
+			//time.Sleep(time.Millisecond * 1000)
 		}
 
 	}()
@@ -86,52 +95,5 @@ func TestPools_Push(t *testing.T) {
 	for {
 		p.printStat()
 		time.Sleep(time.Second)
-	}
-}
-
-func TestMemQueue_addIndex(t *testing.T) {
-	type fields struct {
-		rIndex uint64
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		want   uint64
-	}{
-		{name: "TestMemQueue_addIndex", fields: fields{rIndex: 1}, want: 2},
-		{name: "TestMemQueue_addIndex", fields: fields{rIndex: 10}, want: 11},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := &MemQueue{
-				rIndex: tt.fields.rIndex,
-			}
-			if got := p.addIndex(); got != tt.want {
-				t.Errorf("addIndex() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-func TestMemQueue_cutIndex(t *testing.T) {
-	type fields struct {
-		rIndex uint64
-	}
-	tests := []struct {
-		name   string
-		fields fields
-		want   uint64
-	}{
-		{name: "TestMemQueue_addIndex", fields: fields{rIndex: 1}, want: 0},
-		{name: "TestMemQueue_addIndex", fields: fields{rIndex: 10}, want: 9},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			p := &MemQueue{
-				rIndex: tt.fields.rIndex,
-			}
-			if got := p.cutIndex(); got != tt.want {
-				t.Errorf("addIndex() = %v, want %v", got, tt.want)
-			}
-		})
 	}
 }

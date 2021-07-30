@@ -3,9 +3,7 @@ package queue
 import (
 	"errors"
 	"fmt"
-	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nbvghost/glog"
@@ -29,25 +27,54 @@ type MemQueue struct {
 	outTotalNum     uint
 	processTotalNum uint
 
-	locker *sync.RWMutex
+	locker         sync.RWMutex
+	totalNumLocker sync.RWMutex
 
-	totalNumLocker *sync.RWMutex
+	blockPushIndex       int64
+	blockPushIndexLocker sync.RWMutex
 
-	once *sync.RWMutex
-
-	workingPool *block.MemBlock
-
-	workingReadPool *block.MemBlock
-	rIndex          uint64
+	//blockReadIndex       int64
+	//blockReadIndexLocker sync.RWMutex
 }
 
-func (p *MemQueue) addIndex() uint64 {
-	return atomic.AddUint64(&p.rIndex, 1)
+//push
+func (p *MemQueue) getPushBlockIndex() int64 {
+	p.blockPushIndexLocker.RLock()
+	defer p.blockPushIndexLocker.RUnlock()
+	return p.blockPushIndex
 }
-func (p *MemQueue) cutIndex() uint64 {
-	log.Println(^uint64(1 - 1))
-	return atomic.AddUint64(&p.rIndex, ^uint64(1-1))
+func (p *MemQueue) nextPushBlockIndex() int64 {
+	p.blockPushIndexLocker.Lock()
+	defer p.blockPushIndexLocker.Unlock()
+	p.blockPushIndex++
+	return p.blockPushIndex
 }
+func (p *MemQueue) prePushBlockIndex() int64 {
+	p.blockPushIndexLocker.Lock()
+	defer p.blockPushIndexLocker.Unlock()
+	p.blockPushIndex--
+	return p.blockPushIndex
+}
+
+//read
+/*func (p *MemQueue) getReadBlockIndex() int64 {
+	p.blockReadIndexLocker.RLock()
+	defer p.blockReadIndexLocker.RUnlock()
+	return p.blockReadIndex
+}
+func (p *MemQueue) nextReadBlockIndex() int64 {
+	p.blockReadIndexLocker.Lock()
+	defer p.blockReadIndexLocker.Unlock()
+	p.blockReadIndex++
+	return p.blockReadIndex
+}
+func (p *MemQueue) preReadBlockIndex() int64 {
+	p.blockReadIndexLocker.Lock()
+	defer p.blockReadIndexLocker.Unlock()
+	p.blockReadIndex--
+	return p.blockReadIndex
+}*/
+
 func NewPools() *MemQueue {
 	pt := map[string]interface{}{
 		"Name":                  "task.Pools",
@@ -55,7 +82,7 @@ func NewPools() *MemQueue {
 		"PoolTimeOut":           params.Params.PoolTimeOut,
 		"MaxProcessMessageNum":  params.Params.MaxProcessMessageNum,
 		"MaxWaitCollectMessage": params.Params.MaxWaitCollectMessage,
-		"MaxPoolNum":            params.Params.MaxPoolNum,
+		"BlockBufferSize":       params.Params.BlockBufferSize,
 	}
 
 	if params.Params.PoolSize <= 0 {
@@ -74,16 +101,13 @@ func NewPools() *MemQueue {
 		panic(errors.New("task.Params.MaxWaitCollectMessage,不能有零值"))
 	}
 
-	if params.Params.MaxPoolNum < 0 {
-		panic(errors.New("task.Params.MaxPoolNum,不能为负数"))
+	if params.Params.BlockBufferSize < 0 {
+		panic(errors.New("task.Params.BlockBufferSize,不能为负数"))
 	}
 
 	glog.Trace(pt)
 
-	p := &MemQueue{msgChan: make(chan interface{}, params.Params.MaxProcessMessageNum),
-		totalNumLocker: &sync.RWMutex{},
-		once:           &sync.RWMutex{},
-		locker:         &sync.RWMutex{}}
+	p := &MemQueue{msgChan: make(chan interface{}, params.Params.MaxProcessMessageNum)}
 
 	return p
 
@@ -94,56 +118,34 @@ func (p *MemQueue) Len() int {
 	return len(p.blocks)
 }
 
-func (p *MemQueue) scalePool() *block.MemBlock {
-	p.locker.Lock()
-	defer p.locker.Unlock()
-
-	newPools := make([]*block.MemBlock, 0, 10)
-	for i := 0; i < 10; i++ {
-		if i < len(p.blocks)-1 {
-			if p.blocks[i].IsEmpty() {
-				p.blocks = append(p.blocks[:i], p.blocks[i+1:]...)
-				p.cutIndex()
-			}
-		}
-		pool := block.NewMemBlock()
-		newPools = append(newPools, pool)
-	}
-	p.blocks = append(p.blocks, newPools...)
-	p.poolNum = len(p.blocks)
-	return newPools[0]
-}
-
 func (p *MemQueue) GetMessage(num int) []interface{} {
-	p.once.Lock()
-	defer p.once.Unlock()
-
-	msgs := make([]interface{}, 0)
+	msgList := make([]interface{}, 0)
 	defer func() {
-		p.OutMany(uint(len(msgs)))
+		p.OutMany(uint(len(msgList)))
 		p.printStat()
 	}()
 
 	if num == 0 {
 		num = 1
 	}
-	t := time.NewTicker(time.Duration(params.Params.MaxWaitCollectMessage) * time.Millisecond)
-	defer t.Stop()
 
 	for {
 
 		select {
-		case <-t.C:
+		case <-time.After(time.Duration(params.Params.MaxWaitCollectMessage) * time.Millisecond):
 			p.printStat()
 			//如果有收集的消息的话，在超时后返回，没有的话，继续收集
-			if len(msgs) > 0 {
-				return msgs
+			if len(msgList) > 0 {
+				return msgList
 			} else {
 				continue
 			}
 		default:
-			if msg, err := p.get(); err != nil {
-				msgs = append(msgs, msg)
+			if msg := p.get(); msg != nil {
+				msgList = append(msgList, msg)
+				if len(msgList) >= num {
+					return msgList
+				}
 			}
 		}
 
@@ -151,48 +153,61 @@ func (p *MemQueue) GetMessage(num int) []interface{} {
 
 }
 
-func (p *MemQueue) get() (interface{}, error) {
-	item, err := p.blocks[p.rIndex].GetNext()
-	if err != nil {
-		p.addIndex()
-		return nil, err
+func (p *MemQueue) get() interface{} {
+	if len(p.blocks) == 0 {
+		return nil
 	}
-	return item, err
+	//log.Println(l,p.blockIndex)
+	item := p.blocks[0].Read()
+	if item == nil {
+		p.locker.Lock()
+		defer p.locker.Unlock()
+		if len(p.blocks) > 1 {
+			p.blocks[0].Free()
+			p.blocks = p.blocks[1:]
+		}
+		return nil
+	}
+	return item
 }
-func (p *MemQueue) Push(messages ...interface{}) {
-	if p.workingPool == nil {
-		p.workingPool = p.getAbleWritePool()
-	}
-
+func (p *MemQueue) Push(messages ...interface{}) error {
 	for index := range messages {
-		isFull := p.workingPool.Push(messages[index])
-		if isFull {
-			p.workingPool = p.getAbleWritePool()
-			isFull = p.workingPool.Push(messages[index])
+		for {
+			pushIndex := p.getPushBlockIndex()
+			if int(pushIndex) > len(p.blocks)-1 {
+				if p.scalePool() == false {
+
+					return errors.New("扩容失败")
+				}
+				continue
+			}
+			isFull := p.blocks[pushIndex].Push(messages[index])
 			if isFull {
-				glog.Debug(fmt.Sprintf("缓冲区已满"))
+				p.nextPushBlockIndex()
+			} else {
+				break
 			}
 		}
 	}
 
 	p.InputMany(uint(len(messages)))
+	return nil
 }
-
-func (p *MemQueue) getAbleWritePool() *block.MemBlock {
-	var ablePool *block.MemBlock
+func (p *MemQueue) scalePool() bool {
 	p.locker.Lock()
 	defer p.locker.Unlock()
-	length := len(p.blocks)
-	if length > 0 {
-		_ablePool := p.blocks[length-1]
-		if _ablePool.IsFull() == false {
-			ablePool = _ablePool
+
+	if len(p.blocks) == params.Params.PoolSize {
+		return false
+	}
+
+	for i := 0; i < 10; i++ {
+		if len(p.blocks) < params.Params.PoolSize {
+			p.blocks = append(p.blocks, block.NewMemBlock())
 		}
 	}
-	if ablePool == nil {
-		ablePool = p.scalePool()
-	}
-	return ablePool
+	p.poolNum = len(p.blocks)
+	return true
 }
 
 func (p *MemQueue) OutMany(num uint) {

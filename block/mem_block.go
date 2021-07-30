@@ -1,77 +1,80 @@
 package block
 
 import (
-	"encoding/hex"
-	"errors"
-	"math/rand"
 	"sync"
 	"sync/atomic"
 	"time"
 
-	"github.com/nbvghost/glog"
 	"github.com/nbvghost/queue/params"
 )
 
 type MemBlock struct {
 	sync.RWMutex
-	die         bool
-	inputs      []interface{}
 	lastInputAt int64
-	hash        string
-	isFull      bool   // input 是否已经满
-	rIndex      uint64 //当前已经读取的index
+	/*
+		并发写入,写到 memList 的数量满足 writeNum，将不在写入。todo 没有好的方法将不再写入的  memList 关闭，暂时没有做关闭。
+	*/
+	memList  chan interface{}
+	writeNum int64 //已经写入的数量
+	isFull   bool
 }
 
 func NewMemBlock() *MemBlock {
 	m := &MemBlock{
-		inputs: make([]interface{}, 0, params.Params.PoolSize), lastInputAt: time.Now().UnixNano(),
+		lastInputAt: time.Now().UnixNano(),
+		memList:     make(chan interface{}, params.Params.BlockBufferSize),
 	}
-	m.generatorHash()
 	return m
 }
-func (p *MemBlock) generatorHash() string {
-	dest := [8]byte{}
-	if _, err := rand.Read(dest[:]); err != nil {
-		glog.Panic(err)
+func (p *MemBlock) IsEmpty() bool {
+	return len(p.memList) == 0
+}
+func (p *MemBlock) Free() {
+	//close(p.memList)
+}
+func (p *MemBlock) Read() interface{} {
+	select {
+	case msg := <-p.memList:
+		return msg
+	default:
+		return nil
 	}
-	p.hash = time.Now().Format("20060102150405.999999999") + "." + hex.EncodeToString(dest[:])
-	return p.hash
 }
 
-func (p *MemBlock) IsEmpty() bool {
-	return len(p.inputs) == 0
-}
-func (p *MemBlock) Empty() {
-	p.Lock()
-	defer p.Unlock()
-	p.inputs = nil
-}
-func (p *MemBlock) getIndex() uint64 {
-	return atomic.AddUint64(&p.rIndex, 1)
-}
-func (p *MemBlock) GetNext() (interface{}, error) {
-	index := int(p.getIndex())
-	if index > len(p.inputs)-1 {
-		return nil, errors.New("已经全部读完")
-	}
-	return p.inputs[index], nil
-}
+// Push 添加超时
 func (p *MemBlock) Push(message interface{}) bool {
-	p.Lock()
+	if p.getFull() {
+		return true
+	}
 	defer func() {
-		p.Unlock()
 		p.lastInputAt = time.Now().UnixNano()
 	}()
-	if len(p.inputs) >= params.Params.PoolSize {
-		p.isFull = false
+	if num := atomic.AddInt64(&p.writeNum, 1); num <= int64(cap(p.memList)) { //对 p.writeNum 进行累加，返回的num是无序的
+		select {
+		case p.memList <- message:
+			/*if atomic.LoadInt64(&p.writeNum)==int64(cap(p.memList)){
+				log.Println("dd")
+			}*/
+			//log.Println(num, atomic.LoadInt64(&p.writeNum), int64(cap(p.memList)), atomic.LoadInt64(&p.writeNum) == int64(cap(p.memList)))
+			return false
+		default:
+			return true
+		}
 	} else {
-		p.inputs = append(p.inputs, message)
-		p.isFull = true
+		p.setFull(true)
+		n := atomic.AddInt64(&p.writeNum, -1)
+		if n == int64(cap(p.memList)) {
+			//close(p.memList) //在这里关闭的话，会提前把channel关了
+		}
 	}
-	return p.isFull
+	return true
 }
-
-func (p *MemBlock) IsFull() bool {
+func (p *MemBlock) setFull(v bool) {
+	p.Lock()
+	defer p.Unlock()
+	p.isFull = v
+}
+func (p *MemBlock) getFull() bool {
 	p.RLock()
 	defer p.RUnlock()
 	return p.isFull
