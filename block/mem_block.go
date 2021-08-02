@@ -1,6 +1,7 @@
 package block
 
 import (
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,13 +33,14 @@ func (p *MemBlock) IsEmpty() bool {
 func (p *MemBlock) Free() {
 	//close(p.memList)
 }
-func (p *MemBlock) Read() interface{} {
-	select {
+func (p *MemBlock) Read() <-chan interface{} {
+	/*select {
 	case msg := <-p.memList:
 		return msg
 	default:
 		return nil
-	}
+	}*/
+	return p.memList
 }
 
 // Push 添加超时
@@ -49,6 +51,7 @@ func (p *MemBlock) Push(message interface{}) bool {
 	defer func() {
 		p.lastInputAt = time.Now().UnixNano()
 	}()
+
 	if num := atomic.AddInt64(&p.writeNum, 1); num <= int64(cap(p.memList)) { //对 p.writeNum 进行累加，返回的num是无序的
 		select {
 		case p.memList <- message:
@@ -58,9 +61,13 @@ func (p *MemBlock) Push(message interface{}) bool {
 			//log.Println(num, atomic.LoadInt64(&p.writeNum), int64(cap(p.memList)), atomic.LoadInt64(&p.writeNum) == int64(cap(p.memList)))
 			return false
 		default:
+
 			return true
 		}
 	} else {
+		if num == int64(cap(p.memList)) {
+			log.Println("xx")
+		}
 		p.setFull(true)
 		n := atomic.AddInt64(&p.writeNum, -1)
 		if n == int64(cap(p.memList)) {

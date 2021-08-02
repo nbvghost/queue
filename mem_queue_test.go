@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"testing"
@@ -8,7 +9,6 @@ import (
 
 	"github.com/nbvghost/glog"
 	"github.com/nbvghost/queue/block"
-	"github.com/nbvghost/queue/params"
 )
 
 func init() {
@@ -53,14 +53,14 @@ func TestPools_Push(t *testing.T) {
 
 	log.SetFlags(log.Lshortfile)
 
-	params.Params.MaxWaitCollectMessage = 1000
-	params.Params.BlockBufferSize = 10
-	params.Params.PoolSize = 1000000
+	//params.Params.MaxWaitCollectMessage = 1000
+	//params.Params.BlockBufferSize = 10
+	//params.Params.PoolSize = 1000
 
 	p := NewPools()
 	//p := NewPools(Order)
 
-	n := 0
+	n := 1
 
 	go func() {
 		for {
@@ -81,11 +81,18 @@ func TestPools_Push(t *testing.T) {
 
 		}
 	}()
-
+	var ii = 0
 	go func() {
 
 		for {
-			p.GetMessage(10)
+			msg := p.GetMessage(1)
+			for i := 0; i < len(msg); i++ {
+				if msg[i].(int)-ii == 1 {
+					ii = msg[i].(int)
+				} else {
+					panic(errors.New("panic"))
+				}
+			}
 
 			//time.Sleep(time.Millisecond * 1000)
 		}

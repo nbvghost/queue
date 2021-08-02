@@ -11,7 +11,7 @@ import (
 func TestMemBlock_Push(t *testing.T) {
 
 	t.Run("TestMemBlock_Push", func(t *testing.T) {
-		for {
+		for n := 0; n < 20; n++ {
 			p := NewMemBlock()
 
 			var ifullCount int64 = 0
@@ -19,7 +19,7 @@ func TestMemBlock_Push(t *testing.T) {
 			var readCount int64 = 0
 			go func() {
 				for {
-					if msg := p.Read(); msg != nil {
+					if msg := <-p.Read(); msg != nil {
 						atomic.AddInt64(&readCount, 1)
 					} else {
 						//log.Println("readCount",readCount)
