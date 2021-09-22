@@ -55,6 +55,7 @@ func (p *MemBlock) Push(message interface{}) bool {
 	if num := atomic.AddInt64(&p.writeNum, 1); num <= int64(cap(p.memList)) { //对 p.writeNum 进行累加，返回的num是无序的
 		select {
 		case p.memList <- message:
+			log.Println(num)
 			/*if atomic.LoadInt64(&p.writeNum)==int64(cap(p.memList)){
 				log.Println("dd")
 			}*/
@@ -65,12 +66,10 @@ func (p *MemBlock) Push(message interface{}) bool {
 			return true
 		}
 	} else {
-		if num == int64(cap(p.memList)) {
-			log.Println("xx")
-		}
 		p.setFull(true)
 		n := atomic.AddInt64(&p.writeNum, -1)
 		if n == int64(cap(p.memList)) {
+
 			//close(p.memList) //在这里关闭的话，会提前把channel关了
 		}
 	}
