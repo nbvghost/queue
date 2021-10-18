@@ -3,7 +3,6 @@ package queue
 import (
 	"errors"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 
 type MemQueue struct {
 	blocks     []*block.MemBlock
-	msgChan    chan interface{}
 	PrintTime  time.Time
 	maxPoolNum int
 	poolNum    int
@@ -25,6 +23,8 @@ type MemQueue struct {
 
 	locker         sync.RWMutex
 	totalNumLocker sync.RWMutex
+
+	pushLocker sync.Mutex
 
 	pushOffset *block.Offset
 	readOffset *block.Offset
@@ -63,7 +63,6 @@ func NewPools() *MemQueue {
 	glog.Trace(pt)
 
 	p := &MemQueue{
-		msgChan:    make(chan interface{}, params.Params.MaxProcessMessageNum),
 		pushOffset: &block.Offset{},
 		readOffset: &block.Offset{},
 	}
@@ -104,14 +103,16 @@ func (p *MemQueue) GetMessage(num int) []interface{} {
 				continue
 			}*/
 			return msgList
-		case msg := <-p.get():
-			if msg != nil {
-				msgList = append(msgList, msg)
-				if len(msgList) >= num {
-					return msgList
-				}
-			} else {
+		case msg, isOpen := <-p.get():
+			if isOpen == false {
 				p.cleanAndNext()
+			} else {
+				if msg != nil {
+					msgList = append(msgList, msg)
+					if len(msgList) >= num {
+						return msgList
+					}
+				}
 			}
 			/*default:
 			if msg := p.get(); msg != nil {
@@ -129,10 +130,10 @@ func (p *MemQueue) GetMessage(num int) []interface{} {
 func (p *MemQueue) cleanAndNext() {
 	p.locker.Lock()
 	defer p.locker.Unlock()
-	if p.readOffset.GetIndex() < p.pushOffset.GetIndex() {
-		if cuIndex := p.readOffset.Next(); cuIndex > 0 {
-			for i := int64(0); i < cuIndex-1; i++ {
-				p.blocks[0].Free()
+	readIndex := p.readOffset.GetIndex()
+	if p.blocks[readIndex].IsEmpty() {
+		if readIndex < p.pushOffset.GetIndex() {
+			if cuIndex := p.readOffset.Next(); cuIndex > 0 {
 				p.blocks = p.blocks[1:]
 				p.readOffset.Pre()
 				p.pushOffset.Pre()
@@ -140,27 +141,30 @@ func (p *MemQueue) cleanAndNext() {
 		}
 	}
 }
+
 func (p *MemQueue) get() <-chan interface{} {
 	item := p.blocks[p.readOffset.GetIndex()].Read()
 	return item
 }
+
 func (p *MemQueue) Push(messages ...interface{}) error {
+	p.pushLocker.Lock()
+	defer p.pushLocker.Unlock()
+
 	for index := range messages {
 		for {
 			if int(p.pushOffset.GetIndex()) >= len(p.blocks)-1 {
 				p.scalePool()
 			}
 
-			isFull := p.blocks[p.pushOffset.GetIndex()].Push(messages[index])
+			isFull := p.blocks[p.pushOffset.GetIndex()].TryPush(messages[index])
 			if isFull {
 				if pushIndex := p.pushOffset.GetIndex(); pushIndex < int64(len(p.blocks))-1 {
 					p.pushOffset.Next()
 				} else {
 					//所有的pool都满了
-					log.Println("所有的pool都满了")
-					select {
-					case <-time.After(1000 * time.Millisecond):
-					}
+					return errors.New("所有的pool都满了")
+
 				}
 			} else {
 				break

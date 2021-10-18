@@ -1,9 +1,7 @@
 package block
 
 import (
-	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/nbvghost/queue/params"
@@ -18,62 +16,37 @@ type MemBlock struct {
 	memList  chan interface{}
 	writeNum int64 //已经写入的数量
 	isFull   bool
+	once     *sync.Once
 }
 
-func NewMemBlock() *MemBlock {
-	m := &MemBlock{
-		lastInputAt: time.Now().UnixNano(),
-		memList:     make(chan interface{}, params.Params.BlockBufferSize),
-	}
-	return m
-}
 func (p *MemBlock) IsEmpty() bool {
 	return len(p.memList) == 0
 }
-func (p *MemBlock) Free() {
-	//close(p.memList)
-}
 func (p *MemBlock) Read() <-chan interface{} {
-	/*select {
-	case msg := <-p.memList:
-		return msg
-	default:
-		return nil
-	}*/
 	return p.memList
 }
 
-// Push 添加超时
-func (p *MemBlock) Push(message interface{}) bool {
-	if p.getFull() {
-		return true
+// TryPush 尝试添加消息，如果满了返回true
+func (p *MemBlock) TryPush(message interface{}) bool {
+	if p.isFull {
+		return p.isFull
 	}
+
 	defer func() {
 		p.lastInputAt = time.Now().UnixNano()
 	}()
 
-	if num := atomic.AddInt64(&p.writeNum, 1); num <= int64(cap(p.memList)) { //对 p.writeNum 进行累加，返回的num是无序的
-		select {
-		case p.memList <- message:
-			log.Println(num)
-			/*if atomic.LoadInt64(&p.writeNum)==int64(cap(p.memList)){
-				log.Println("dd")
-			}*/
-			//log.Println(num, atomic.LoadInt64(&p.writeNum), int64(cap(p.memList)), atomic.LoadInt64(&p.writeNum) == int64(cap(p.memList)))
-			return false
-		default:
-
-			return true
-		}
-	} else {
-		p.setFull(true)
-		n := atomic.AddInt64(&p.writeNum, -1)
-		if n == int64(cap(p.memList)) {
-
-			//close(p.memList) //在这里关闭的话，会提前把channel关了
-		}
+	select {
+	case p.memList <- message:
+		return false
+	default:
+		p.once.Do(func() {
+			close(p.memList)
+			p.isFull = true
+			p.once = &sync.Once{}
+		})
+		return true
 	}
-	return true
 }
 func (p *MemBlock) setFull(v bool) {
 	p.Lock()
@@ -84,4 +57,13 @@ func (p *MemBlock) getFull() bool {
 	p.RLock()
 	defer p.RUnlock()
 	return p.isFull
+}
+
+func NewMemBlock() *MemBlock {
+	m := &MemBlock{
+		lastInputAt: time.Now().UnixNano(),
+		memList:     make(chan interface{}, params.Params.BlockBufferSize),
+		once:        &sync.Once{},
+	}
+	return m
 }

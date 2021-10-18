@@ -1,9 +1,9 @@
 package queue
 
 import (
-	"errors"
 	"fmt"
 	"log"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,40 +60,31 @@ func TestPools_Push(t *testing.T) {
 	p := NewPools()
 	//p := NewPools(Order)
 
-	n := 1
+	var n int64 = 1
 
 	go func() {
 		for {
 
-			err := p.Push(n)
-			if err != nil {
-				log.Println(err)
-				break
-			}
+			for i := 0; i < 10; i++ {
+				go func() {
+					err := p.Push(atomic.AddInt64(&n, 1))
+					if err != nil {
+						log.Println(err)
+					}
 
-			n++
-			if n > 500 {
-
-				// n=0
-				//time.Sleep(time.Second*20)
+				}()
 			}
-			//time.Sleep(time.Millisecond * 1)
 
 		}
 	}()
-	var ii = 0
+
+	time.Sleep(time.Second)
+
 	go func() {
 
 		for {
 			msg := p.GetMessage(1)
-			for i := 0; i < len(msg); i++ {
-				if msg[i].(int)-ii == 1 {
-					ii = msg[i].(int)
-				} else {
-					panic(errors.New("panic"))
-				}
-			}
-
+			log.Println(msg)
 			//time.Sleep(time.Millisecond * 1000)
 		}
 
