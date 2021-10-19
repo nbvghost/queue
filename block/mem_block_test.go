@@ -1,66 +1,53 @@
 package block
 
 import (
-	"errors"
 	"log"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/nbvghost/queue/params"
 )
 
 func BenchmarkMemBlock_TryPush(b *testing.B) {
-	p := NewMemBlock()
-	params.Params.BlockBufferSize = b.N
+	p := NewMemBlock(b.N)
 	for i := 0; i < b.N; i++ {
 		isFull := p.TryPush(i)
 		if isFull {
 
 		}
 	}
-	log.Println(b.N, cap(p.memList), "/", cap(p.memList))
 }
 func TestMemBlock_Push(t *testing.T) {
 	t.Run("TestMemBlock_Push", func(t *testing.T) {
-		params.Params.BlockBufferSize = 50000
+
+		p := NewMemBlock(10)
+
+		go func() {
+			for msg := range p.Read() {
+				log.Println(msg)
+			}
+			log.Println("read over 1")
+		}()
+		go func() {
+			for msg := range p.Read() {
+				log.Println(msg)
+			}
+			log.Println("read over 2")
+		}()
+
+		var num int64
 
 		for n := 0; n < 20; n++ {
-			p := NewMemBlock()
-			var ifullCount int64 = 0
-			var readCount int64 = 0
 			go func() {
-				for {
-					if msg, _ := <-p.Read(); msg != nil {
-						atomic.AddInt64(&readCount, 1)
-
-					} else {
-						//log.Println("readCount",readCount)
-						if readCount != 512 {
-							panic(errors.New("数据读取不完整"))
-						}
+				wp := atomic.AddInt64(&num, 1)
+				if !p.IsFull() {
+					if p.TryPush(wp) {
+						log.Println("is full", wp)
 					}
+				} else {
+					log.Println("is full", wp)
 				}
 			}()
 
-			var wg sync.WaitGroup
-			for i := 0; i < params.Params.BlockBufferSize; i++ {
-				wg.Add(1)
-				go func(ii int) {
-					defer wg.Done()
-					ifull := p.TryPush(ii)
-					if ifull {
-						atomic.AddInt64(&ifullCount, 1)
-					}
-				}(i)
-			}
-			wg.Wait()
-
-			//if ifullCount != 488 {
-			//log.Println(len(p.memList),ifullCount,int64(len(p.memList))+ifullCount)
-
-			//time.Sleep(time.Millisecond*1)
 		}
 	})
 	log.Println("over")

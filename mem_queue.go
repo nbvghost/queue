@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nbvghost/glog"
@@ -17,12 +18,11 @@ type MemQueue struct {
 	maxPoolNum int
 	poolNum    int
 
-	inputTotalNum   uint
-	outTotalNum     uint
-	processTotalNum uint
+	inputTotalNum   uint64
+	outTotalNum     uint64
+	processTotalNum uint64
 
-	locker         sync.RWMutex
-	totalNumLocker sync.RWMutex
+	locker sync.RWMutex
 
 	pushLocker sync.Mutex
 
@@ -65,6 +65,9 @@ func NewPools() *MemQueue {
 	p := &MemQueue{
 		pushOffset: &block.Offset{},
 		readOffset: &block.Offset{},
+		blocks: []*block.MemBlock{
+			block.NewMemBlock(params.Params.BlockBufferSize),
+		},
 	}
 
 	return p
@@ -146,26 +149,29 @@ func (p *MemQueue) get() <-chan interface{} {
 	item := p.blocks[p.readOffset.GetIndex()].Read()
 	return item
 }
+func (p *MemQueue) getAbleWriteIndex() int {
+	if len(p.blocks) == 0 {
+		p.scalePool()
+	}
+	item := p.blocks[len(p.blocks)-1].Read()
 
+	return item
+}
 func (p *MemQueue) Push(messages ...interface{}) error {
 	p.pushLocker.Lock()
 	defer p.pushLocker.Unlock()
 
 	for index := range messages {
+
 		for {
-			if int(p.pushOffset.GetIndex()) >= len(p.blocks)-1 {
-				p.scalePool()
-			}
-
-			isFull := p.blocks[p.pushOffset.GetIndex()].TryPush(messages[index])
-			if isFull {
-				if pushIndex := p.pushOffset.GetIndex(); pushIndex < int64(len(p.blocks))-1 {
-					p.pushOffset.Next()
-				} else {
-					//所有的pool都满了
-					return errors.New("所有的pool都满了")
-
+			b := p.blocks[len(p.blocks)-1]
+			if b.IsFull() {
+				if !p.scalePool() {
+					return errors.New("pool都满了")
 				}
+			}
+			if b.TryPush(messages[index]) {
+				continue
 			} else {
 				break
 			}
@@ -192,29 +198,21 @@ func (p *MemQueue) scalePool() bool {
 	return true
 }
 
-func (p *MemQueue) OutMany(num uint) {
-	p.totalNumLocker.Lock()
-	defer p.totalNumLocker.Unlock()
-	p.outTotalNum = p.outTotalNum + num
+func (p *MemQueue) OutMany(num uint64) {
+	atomic.AddUint64(&p.outTotalNum, num)
 }
-func (p *MemQueue) InputMany(num uint) {
-	p.totalNumLocker.Lock()
-	defer p.totalNumLocker.Unlock()
-	p.inputTotalNum = p.inputTotalNum + num
+func (p *MemQueue) InputMany(num uint64) {
+	atomic.AddUint64(&p.inputTotalNum, num)
 }
 func (p *MemQueue) ProcessOne() {
-	p.totalNumLocker.Lock()
-	defer p.totalNumLocker.Unlock()
-	p.processTotalNum++
+	atomic.AddUint64(&p.processTotalNum, 1)
 }
 func (p *MemQueue) IsEmpty() bool {
-
 	for i := 0; i < len(p.blocks); i++ {
 		if p.blocks[i].IsEmpty() == false {
 			return false
 		}
 	}
-
 	p.printStat()
 	if p.outTotalNum != p.inputTotalNum || p.outTotalNum != p.processTotalNum {
 		return false

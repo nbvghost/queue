@@ -2,9 +2,8 @@ package block
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
-
-	"github.com/nbvghost/queue/params"
 )
 
 type MemBlock struct {
@@ -15,10 +14,13 @@ type MemBlock struct {
 	*/
 	memList  chan interface{}
 	writeNum int64 //已经写入的数量
-	isFull   bool
+	isFull   uint32
 	once     *sync.Once
 }
 
+func (p *MemBlock) IsFull() bool {
+	return atomic.LoadUint32(&p.isFull) == 1
+}
 func (p *MemBlock) IsEmpty() bool {
 	return len(p.memList) == 0
 }
@@ -26,10 +28,13 @@ func (p *MemBlock) Read() <-chan interface{} {
 	return p.memList
 }
 
-// TryPush 尝试添加消息，如果满了返回true
+// TryPush 尝试添加消息，如果满了返回true,使用atomic后，比不用慢了4倍
 func (p *MemBlock) TryPush(message interface{}) bool {
-	if p.isFull {
-		return p.isFull
+	if atomic.AddInt64(&p.writeNum, 1) > int64(cap(p.memList)) {
+		if atomic.CompareAndSwapUint32(&p.isFull, 0, 1) {
+			close(p.memList)
+		}
+		return true
 	}
 
 	defer func() {
@@ -40,29 +45,14 @@ func (p *MemBlock) TryPush(message interface{}) bool {
 	case p.memList <- message:
 		return false
 	default:
-		p.once.Do(func() {
-			close(p.memList)
-			p.isFull = true
-			p.once = &sync.Once{}
-		})
 		return true
 	}
 }
-func (p *MemBlock) setFull(v bool) {
-	p.Lock()
-	defer p.Unlock()
-	p.isFull = v
-}
-func (p *MemBlock) getFull() bool {
-	p.RLock()
-	defer p.RUnlock()
-	return p.isFull
-}
 
-func NewMemBlock() *MemBlock {
+func NewMemBlock(bufferSize int) Block {
 	m := &MemBlock{
 		lastInputAt: time.Now().UnixNano(),
-		memList:     make(chan interface{}, params.Params.BlockBufferSize),
+		memList:     make(chan interface{}, bufferSize),
 		once:        &sync.Once{},
 	}
 	return m
