@@ -2,7 +2,6 @@ package block
 
 import (
 	"log"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -34,20 +33,22 @@ func TestMemBlock_Push(t *testing.T) {
 			log.Println("read over 2")
 		}()
 
-		var num int64
+		//var num int64
 
-		for n := 0; n < 20; n++ {
-			go func() {
-				wp := atomic.AddInt64(&num, 1)
-				if !p.IsFull() {
-					if p.TryPush(wp) {
+		for {
+			for n := 0; n < 200; n++ {
+				go func() {
+					wp := n //atomic.AddInt64(&num, 1)
+					if !p.IsFull() {
+						if p.TryPush(wp) {
+							log.Println("is full", wp)
+						}
+					} else {
 						log.Println("is full", wp)
 					}
-				} else {
-					log.Println("is full", wp)
-				}
-			}()
+				}()
 
+			}
 		}
 	})
 	log.Println("over")

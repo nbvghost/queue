@@ -4,19 +4,19 @@ type DiskBlock struct {
 }
 
 func (d *DiskBlock) IsFull() bool {
-	panic("implement me")
+	return false
 }
 
 func (d *DiskBlock) IsEmpty() bool {
-	panic("implement me")
+	return false
 }
 
 func (d *DiskBlock) TryPush(message interface{}) bool {
-	panic("implement me")
+	return false
 }
 
 func (d *DiskBlock) Read() <-chan interface{} {
-	panic("implement me")
+	return make(chan interface{}, 10)
 }
 
 func NewDiskBlock() Block {

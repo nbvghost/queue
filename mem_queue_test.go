@@ -6,47 +6,17 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/nbvghost/glog"
-	"github.com/nbvghost/queue/block"
 )
 
 func init() {
 
 }
-func TestPools_Remove(t *testing.T) {
-	PoolTool := NewPools()
-
-	type args struct {
-		target *block.MemBlock
-	}
-	tests := []struct {
-		name string
-		args args
-	}{
-		{name: "TestPools_Remove", args: args{target: PoolTool.blocks[3]}},
-		{name: "TestPools_Remove", args: args{target: PoolTool.blocks[2]}},
-		{name: "TestPools_Remove", args: args{target: PoolTool.blocks[0]}},
-		{name: "TestPools_Remove", args: args{target: PoolTool.blocks[1]}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			//p.Remove(tt.args.target)
-		})
-	}
-	for {
-		glog.Trace(PoolTool.blocks)
-		time.Sleep(time.Second)
-	}
-
-}
 
 func BenchmarkPools_Push(b *testing.B) {
-	p := NewPools()
+	p := NewQueue(Config{})
 	fmt.Println(b.N)
 	for i := 0; i < b.N; i++ {
-		p.Push(125)
+		p.Push(i)
 	}
 }
 func TestPools_Push(t *testing.T) {
@@ -57,24 +27,16 @@ func TestPools_Push(t *testing.T) {
 	//params.Params.BlockBufferSize = 10
 	//params.Params.PoolSize = 1000
 
-	p := NewPools()
+	p := NewQueue(Config{})
 	//p := NewPools(Order)
 
-	var n int64 = 1
-
 	go func() {
-		for {
-
-			for i := 0; i < 10; i++ {
-				go func() {
-					err := p.Push(atomic.AddInt64(&n, 1))
-					if err != nil {
-						log.Println(err)
-					}
-
-				}()
+		for n := 0; n < 1000; n++ {
+			for i := 0; i < 100; i++ {
+				go func(ii int) {
+					p.Push(ii)
+				}((n * 1000 * 100) + i)
 			}
-
 		}
 	}()
 
@@ -83,9 +45,26 @@ func TestPools_Push(t *testing.T) {
 	go func() {
 
 		for {
+			time.Sleep(time.Second * 10)
+			p.Push(19999999)
+		}
+
+	}()
+
+	go func() {
+
+		var pp int64
+		go func() {
+			for {
+				log.Println(pp)
+				time.Sleep(time.Second)
+			}
+		}()
+		for {
 			msg := p.GetMessage(1)
 			log.Println(msg)
 			//time.Sleep(time.Millisecond * 1000)
+			atomic.AddInt64(&pp, 1)
 		}
 
 	}()

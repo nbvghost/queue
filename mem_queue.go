@@ -1,7 +1,6 @@
 package queue
 
 import (
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -9,11 +8,10 @@ import (
 
 	"github.com/nbvghost/glog"
 	"github.com/nbvghost/queue/block"
-	"github.com/nbvghost/queue/params"
 )
 
 type MemQueue struct {
-	blocks     []*block.MemBlock
+	blocks     []block.Block
 	PrintTime  time.Time
 	maxPoolNum int
 	poolNum    int
@@ -24,54 +22,50 @@ type MemQueue struct {
 
 	locker sync.RWMutex
 
-	pushLocker sync.Mutex
-
-	pushOffset *block.Offset
-	readOffset *block.Offset
+	config Config
 }
 
-func NewPools() *MemQueue {
+func NewQueue(config Config) *MemQueue {
 	pt := map[string]interface{}{
 		"Name":                  "task.Pools",
-		"PoolSize":              params.Params.PoolSize,
-		"PoolTimeOut":           params.Params.PoolTimeOut,
-		"MaxProcessMessageNum":  params.Params.MaxProcessMessageNum,
-		"MaxWaitCollectMessage": params.Params.MaxWaitCollectMessage,
-		"BlockBufferSize":       params.Params.BlockBufferSize,
+		"PoolSize":              config.PoolSize,
+		"PoolTimeOut":           config.PoolTimeOut,
+		"MaxProcessMessageNum":  config.MaxProcessMessageNum,
+		"MaxWaitCollectMessage": config.MaxWaitCollectMessage,
+		"BlockBufferSize":       config.BlockBufferSize,
 	}
 
-	if params.Params.PoolSize <= 0 {
-		panic(errors.New("task.Params.PoolSize,不能有零值"))
+	if config.PoolSize <= 0 {
+		config.PoolSize = 1024
 	}
 
-	if params.Params.PoolTimeOut <= 0 {
-		panic(errors.New("task.Params.PoolTimeOut,不能有零值"))
+	if config.PoolTimeOut <= 0 {
+		config.PoolTimeOut = 60 * 1000
 	}
 
-	if params.Params.MaxProcessMessageNum <= 0 {
-		panic(errors.New("task.Params.MaxProcessMessageNum,不能有零值"))
+	if config.MaxProcessMessageNum <= 0 {
+		config.MaxProcessMessageNum = 1000
 	}
 
-	if params.Params.MaxWaitCollectMessage <= 0 {
-		panic(errors.New("task.Params.MaxWaitCollectMessage,不能有零值"))
+	if config.MaxWaitCollectMessage <= 0 {
+		config.MaxWaitCollectMessage = 1000
 	}
-
-	if params.Params.BlockBufferSize < 0 {
-		panic(errors.New("task.Params.BlockBufferSize,不能为负数"))
+	if config.NextWaitReadMessage <= 0 {
+		config.NextWaitReadMessage = 800
+	}
+	if config.BlockBufferSize <= 0 {
+		config.BlockBufferSize = 512
 	}
 
 	glog.Trace(pt)
 
 	p := &MemQueue{
-		pushOffset: &block.Offset{},
-		readOffset: &block.Offset{},
-		blocks: []*block.MemBlock{
-			block.NewMemBlock(params.Params.BlockBufferSize),
+		config: config,
+		blocks: []block.Block{
+			block.NewMemBlock(config.BlockBufferSize),
 		},
 	}
-
 	return p
-
 }
 
 func (p *MemQueue) Len() int {
@@ -82,12 +76,15 @@ func (p *MemQueue) Len() int {
 func (p *MemQueue) GetMessage(num int) []interface{} {
 	msgList := make([]interface{}, 0)
 	defer func() {
-		p.OutMany(uint(len(msgList)))
+		p.OutMany(uint64(len(msgList)))
 		p.printStat()
 	}()
 
 	if num == 0 {
 		num = 1
+	}
+	if num > p.config.MaxProcessMessageNum {
+		num = p.config.MaxProcessMessageNum
 	}
 
 	if len(p.blocks) == 0 {
@@ -97,18 +94,12 @@ func (p *MemQueue) GetMessage(num int) []interface{} {
 	for {
 
 		select {
-		case <-time.After(time.Duration(params.Params.MaxWaitCollectMessage) * time.Millisecond):
+		case <-time.After(time.Duration(p.config.MaxWaitCollectMessage) * time.Millisecond):
 			p.printStat()
-			//如果有收集的消息的话，在超时后返回，没有的话，继续收集
-			/*if len(msgList) > 0 {
-				return msgList
-			} else {
-				continue
-			}*/
 			return msgList
-		case msg, isOpen := <-p.get():
+		case msg, isOpen := <-p.blocks[0].Read():
 			if isOpen == false {
-				p.cleanAndNext()
+				p.removeBlock()
 			} else {
 				if msg != nil {
 					msgList = append(msgList, msg)
@@ -117,58 +108,35 @@ func (p *MemQueue) GetMessage(num int) []interface{} {
 					}
 				}
 			}
-			/*default:
-			if msg := p.get(); msg != nil {
-				msgList = append(msgList, msg)
-				if len(msgList) >= num {
-					return msgList
-				}
-			}*/
 		}
 
 	}
 
 }
 
-func (p *MemQueue) cleanAndNext() {
+func (p *MemQueue) removeBlock() {
 	p.locker.Lock()
 	defer p.locker.Unlock()
-	readIndex := p.readOffset.GetIndex()
-	if p.blocks[readIndex].IsEmpty() {
-		if readIndex < p.pushOffset.GetIndex() {
-			if cuIndex := p.readOffset.Next(); cuIndex > 0 {
-				p.blocks = p.blocks[1:]
-				p.readOffset.Pre()
-				p.pushOffset.Pre()
-			}
+
+	if len(p.blocks) > 0 {
+		if p.blocks[0].IsFull() && p.blocks[0].IsEmpty() {
+			p.blocks = p.blocks[1:]
 		}
 	}
-}
 
-func (p *MemQueue) get() <-chan interface{} {
-	item := p.blocks[p.readOffset.GetIndex()].Read()
-	return item
 }
-func (p *MemQueue) getAbleWriteIndex() int {
-	if len(p.blocks) == 0 {
-		p.scalePool()
-	}
-	item := p.blocks[len(p.blocks)-1].Read()
+func (p *MemQueue) Push(messages ...interface{}) {
+	p.locker.Lock()
+	defer p.locker.Unlock()
 
-	return item
-}
-func (p *MemQueue) Push(messages ...interface{}) error {
-	p.pushLocker.Lock()
-	defer p.pushLocker.Unlock()
-
+	defer func() {
+		p.InputMany(uint64(len(messages)))
+	}()
 	for index := range messages {
-
 		for {
-			b := p.blocks[len(p.blocks)-1]
+			b := p.getLatest()
 			if b.IsFull() {
-				if !p.scalePool() {
-					return errors.New("pool都满了")
-				}
+				b = p.scalePool()
 			}
 			if b.TryPush(messages[index]) {
 				continue
@@ -177,27 +145,13 @@ func (p *MemQueue) Push(messages ...interface{}) error {
 			}
 		}
 	}
-
-	p.InputMany(uint(len(messages)))
-	return nil
 }
-func (p *MemQueue) scalePool() bool {
-	p.locker.Lock()
-	defer p.locker.Unlock()
-
-	if len(p.blocks) == params.Params.PoolSize {
-		return false
-	}
-
-	for i := 0; i < 10; i++ {
-		if len(p.blocks) <= params.Params.PoolSize {
-			p.blocks = append(p.blocks, block.NewMemBlock())
-		}
-	}
-	p.poolNum = len(p.blocks)
-	return true
+func (p *MemQueue) getLatest() block.Block {
+	//p.locker.RLock()
+	//defer p.locker.RUnlock()
+	b := p.blocks[len(p.blocks)-1]
+	return b
 }
-
 func (p *MemQueue) OutMany(num uint64) {
 	atomic.AddUint64(&p.outTotalNum, num)
 }
@@ -217,10 +171,20 @@ func (p *MemQueue) IsEmpty() bool {
 	if p.outTotalNum != p.inputTotalNum || p.outTotalNum != p.processTotalNum {
 		return false
 	}
-
 	return true
-
 }
+
+func (p *MemQueue) scalePool() block.Block {
+
+	if len(p.blocks) >= p.config.PoolSize {
+		p.blocks = append(p.blocks, block.NewDiskBlock())
+	} else {
+		p.blocks = append(p.blocks, block.NewMemBlock(p.config.BlockBufferSize))
+	}
+	p.poolNum = len(p.blocks)
+	return p.blocks[len(p.blocks)-1]
+}
+
 func (p *MemQueue) printStat() {
 	now := time.Now()
 	if now.Sub(p.PrintTime) > time.Second*10 {
