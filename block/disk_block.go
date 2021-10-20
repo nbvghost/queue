@@ -20,5 +20,6 @@ func (d *DiskBlock) Read() <-chan interface{} {
 }
 
 func NewDiskBlock() Block {
+
 	return &DiskBlock{}
 }
